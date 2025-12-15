@@ -2,7 +2,7 @@ name: JS File Monitor
 
 on:
   schedule:
-    - cron: '0 */1 * * *'  # Runs every hour
+    - cron: '0 */12 * * *'  # Every 12 hours instead
   workflow_dispatch:
 
 jobs:
