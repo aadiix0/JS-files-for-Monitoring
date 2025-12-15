@@ -279,7 +279,7 @@ EOF
                 
                 file_count=$((file_count + 1))
                 
-                # Limit to first 20 files in GitHub summary (GitHub has limits too)
+                # Limit to first 20 files in GitHub summary
                 if [ $file_count -gt 20 ]; then
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "**... and more files. Download artifacts or check Discord for all diffs.**" >> $GITHUB_STEP_SUMMARY
