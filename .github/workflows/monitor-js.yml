@@ -1,0 +1,56 @@
+name: JS File Monitor
+
+on:
+  schedule:
+    - cron: '0 */1 * * *'  # Runs every hour
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for comparison
+
+      - name: Fetch target JS files
+        run: |
+          mkdir -p monitored-files
+          # Replace with your target JS URLs
+          curl -s "https://example.com/app.js" -o monitored-files/app.js
+          curl -s "https://example.com/bundle.js" -o monitored-files/bundle.js
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if [ -f "baseline/app.js" ]; then
+            if ! diff -q baseline/app.js monitored-files/app.js > /dev/null; then
+              echo "changes_detected=true" >> $GITHUB_OUTPUT
+              diff -u baseline/app.js monitored-files/app.js > changes.diff || true
+            fi
+          else
+            echo "Initial baseline created"
+          fi
+
+      - name: Send Discord alert
+        if: steps.diff.outputs.changes_detected == 'true'
+        uses: tsickert/discord-webhook@v7.0.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          username: "JS Monitor Bot"
+          embed-title: "⚠️ JS File Changes Detected"
+          embed-description: "Changes found in monitored JavaScript files"
+          embed-color: 16776960
+          embed-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Update baseline
+        if: steps.diff.outputs.changes_detected == 'true'
+        run: |
+          mkdir -p baseline
+          cp monitored-files/*.js baseline/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add baseline/
+          git commit -m "Update JS baseline [skip ci]"
+          git push
