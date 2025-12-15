@@ -2,7 +2,7 @@ name: JS File Monitor
 
 on:
   schedule:
-    - cron: '0 */12 * * *'  # Every 12 hours instead
+    - cron: '0 */12 * * *'  # Every 12 hours
   workflow_dispatch:
 
 jobs:
@@ -51,6 +51,7 @@ jobs:
           done
 
       - name: Scan and fetch all JS files
+        timeout-minutes: 20
         run: |
           mkdir -p monitored-files diffs
           
@@ -89,7 +90,7 @@ jobs:
                 [[ ! "$js_filename" =~ \.js$ ]] && js_filename="${js_filename}.js"
                 
                 echo "    Fetching: $js_filename from $url"
-                curl -sL "$url" -o "monitored-files/$platform/$program_name/$js_filename" || \
+                curl -sL --max-time 30 "$url" -o "monitored-files/$platform/$program_name/$js_filename" || \
                   echo "Failed to fetch $url"
                 
               done < "$program_file"
@@ -102,6 +103,8 @@ jobs:
           changes_found=false
           changes_summary=""
           diff_content=""
+          new_file_count=0
+          changed_file_count=0
           
           mkdir -p baseline
           
@@ -128,19 +131,28 @@ jobs:
                     changes_found=true
                     changes_summary="${changes_summary}\n🔴 **${platform_name}/${program_name}** - ${filename}"
                     
-                    # Generate compact diff (limit to 25 lines for Discord)
-                    mkdir -p "diffs/$platform_name/$program_name"
-                    diff_output=$(diff -U 3 "$baseline_file" "$js_file" | head -n 25)
-                    diff_lines=$(echo "$diff_output" | wc -l)
+                    changed_file_count=$((changed_file_count + 1))
                     
-                    # Add diff to content with code block
-                    diff_content="${diff_content}\n\n**${platform_name}/${program_name}/${filename}:**\n\`\`\`diff\n${diff_output}\n"
-                    if [ "$diff_lines" -eq 25 ]; then
-                      diff_content="${diff_content}... (truncated)\n"
+                    # Only show diff preview for first 3 changed files
+                    if [ $changed_file_count -le 3 ]; then
+                      # Generate compact diff (limit to 20 lines for Discord)
+                      mkdir -p "diffs/$platform_name/$program_name"
+                      diff_output=$(diff -U 3 "$baseline_file" "$js_file" 2>/dev/null | head -n 20 || echo "Diff generation failed")
+                      diff_lines=$(echo "$diff_output" | wc -l)
+                      
+                      # Limit to 600 chars per diff
+                      diff_output_short=$(echo "$diff_output" | head -c 600)
+                      
+                      # Add diff to content with code block
+                      diff_content="${diff_content}\n\n**${platform_name}/${program_name}/${filename}:**\n\`\`\`diff\n${diff_output_short}\n"
+                      if [ "$diff_lines" -eq 20 ]; then
+                        diff_content="${diff_content}... (truncated)\n"
+                      fi
+                      diff_content="${diff_content}\`\`\`"
                     fi
-                    diff_content="${diff_content}\`\`\`"
                     
-                    # Save full diff to file
+                    # Always save full diff to file
+                    mkdir -p "diffs/$platform_name/$program_name"
                     diff -u "$baseline_file" "$js_file" > \
                       "diffs/$platform_name/$program_name/${filename}.diff" 2>&1 || true
                   fi
@@ -149,15 +161,20 @@ jobs:
                   changes_found=true
                   changes_summary="${changes_summary}\n🟢 **${platform_name}/${program_name}** - ${filename} (new)"
                   
-                  # Show first 20 lines of new file
-                  new_content=$(head -n 20 "$js_file")
-                  line_count=$(wc -l < "$js_file")
+                  new_file_count=$((new_file_count + 1))
                   
-                  diff_content="${diff_content}\n\n**${platform_name}/${program_name}/${filename} (NEW):**\n\`\`\`javascript\n${new_content}\n"
-                  if [ "$line_count" -gt 20 ]; then
-                    diff_content="${diff_content}... (${line_count} total lines)\n"
+                  # Only show preview for first 5 new files
+                  if [ $new_file_count -le 5 ]; then
+                    # Show first 20 lines of new file
+                    new_content=$(head -n 20 "$js_file" | head -c 800)
+                    line_count=$(wc -l < "$js_file")
+                    
+                    diff_content="${diff_content}\n\n**${platform_name}/${program_name}/${filename} (NEW):**\n\`\`\`javascript\n${new_content}\n"
+                    if [ "$line_count" -gt 20 ]; then
+                      diff_content="${diff_content}... (${line_count} total lines)\n"
+                    fi
+                    diff_content="${diff_content}\`\`\`"
                   fi
-                  diff_content="${diff_content}\`\`\`"
                 fi
               done
             done
@@ -166,16 +183,26 @@ jobs:
           if [ "$changes_found" = true ]; then
             echo "changes_detected=true" >> $GITHUB_OUTPUT
             
-            # Limit total diff content to 3500 chars (safe for Discord 4096 limit)
-            diff_content_trimmed=$(echo -e "$diff_content" | head -c 3500)
+            # Limit total diff content to 2500 chars (safer limit)
+            diff_content_trimmed=$(echo -e "$diff_content" | head -c 2500)
             
-            echo "summary<<EOF" >> $GITHUB_OUTPUT
-            echo -e "$changes_summary" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            # Add summary of how many files if more than shown
+            if [ $changed_file_count -gt 3 ] || [ $new_file_count -gt 5 ]; then
+              diff_content_trimmed="${diff_content_trimmed}\n\n_Showing preview for top files only. View full details in workflow artifacts._"
+            fi
             
-            echo "diff_output<<EOF" >> $GITHUB_OUTPUT
-            echo -e "$diff_content_trimmed" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            # Use delimiter for safe multiline output
+            {
+              echo "summary<<EOFMARKER"
+              echo -e "$changes_summary"
+              echo "EOFMARKER"
+            } >> $GITHUB_OUTPUT
+            
+            {
+              echo "diff_output<<EOFMARKER"
+              echo -e "$diff_content_trimmed"
+              echo "EOFMARKER"
+            } >> $GITHUB_OUTPUT
           fi
 
       - name: Upload diff artifacts
@@ -192,6 +219,7 @@ jobs:
           echo "## 🔍 JavaScript Changes Detected" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
+          file_count=0
           for platform in hackerone bugcrowd intigriti personal; do
             [ ! -d "diffs/$platform" ] && continue
             
@@ -201,13 +229,22 @@ jobs:
               for diff_file in "$program_dir"/*.diff; do
                 [ ! -f "$diff_file" ] && continue
                 
+                file_count=$((file_count + 1))
+                
+                # Limit to first 15 files in GitHub summary
+                if [ $file_count -gt 15 ]; then
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**... and more files. Download artifacts to see all diffs.**" >> $GITHUB_STEP_SUMMARY
+                  break 3
+                fi
+                
                 platform_name=$(basename $(dirname $(dirname "$diff_file")))
                 program_name=$(basename $(dirname "$diff_file"))
                 filename=$(basename "$diff_file" .diff)
                 
                 echo "### 📄 $platform_name/$program_name/$filename" >> $GITHUB_STEP_SUMMARY
                 echo '```
-                head -n 50 "$diff_file" >> $GITHUB_STEP_SUMMARY
+                head -n 40 "$diff_file" >> $GITHUB_STEP_SUMMARY
                 echo '```' >> $GITHUB_STEP_SUMMARY
                 echo "" >> $GITHUB_STEP_SUMMARY
               done
