@@ -13,6 +13,44 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
+      - name: Clean up old monitored files
+        run: |
+          # Remove temporary folders from previous runs (GitHub Actions does this anyway)
+          rm -rf monitored-files diffs
+          
+          # Optional: Remove baseline files that no longer have URL configs
+          # This prevents orphaned baselines when you remove programs
+          for platform in hackerone bugcrowd intigriti personal; do
+            [ ! -d "baseline/$platform" ] && continue
+            
+            for baseline_program in baseline/$platform/*; do
+              [ ! -d "$baseline_program" ] && continue
+              
+              program_name=$(basename "$baseline_program")
+              
+              # Check if program still has config file (flat or nested)
+              config_exists=false
+              
+              # Check flat structure
+              if [ -f "$platform/${program_name}.txt" ]; then
+                config_exists=true
+              fi
+              
+              # Check nested structure
+              if [ -f "$platform/${program_name}/urls.txt" ] || [ -f "$platform/${program_name}/*.txt" ]; then
+                config_exists=true
+              fi
+              
+              # Remove baseline if config no longer exists
+              if [ "$config_exists" = false ]; then
+                echo "Removing orphaned baseline: $platform/$program_name"
+                rm -rf "$baseline_program"
+              fi
+            done
+          done
+
+      
 
       - name: Scan and fetch all JS files
         run: |
