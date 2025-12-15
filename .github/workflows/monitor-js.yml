@@ -38,7 +38,7 @@ jobs:
               fi
               
               # Check nested structure
-              if [ -f "$platform/${program_name}/urls.txt" ] || [ -f "$platform/${program_name}/*.txt" ]; then
+              if [ -f "$platform/${program_name}/urls.txt" ] || [ -f "$platform/${program_name}/"*.txt ]; then
                 config_exists=true
               fi
               
@@ -49,8 +49,6 @@ jobs:
               fi
             done
           done
-
-      
 
       - name: Scan and fetch all JS files
         run: |
