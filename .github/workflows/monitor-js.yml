@@ -261,8 +261,7 @@ EOF
 
                 # Send to Discord
                 curl -H "Content-Type: application/json" \
-                  -d "$json_payload" \
-                  "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                  -d "$json_payload" "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
 
             elif [ "$change_type" = "NEW" ]; then
@@ -281,7 +280,7 @@ EOF
   "username": "JS Monitor Bot",
   "embeds": [{
     "title": "🟢 New File Detected",
-    "description": "**Platform:** $platform\n**Program:** $program\n**File:** \`$filename\` (${line_count} lines total)\n\n**Preview (30 lines):**\n\`\`\`javascript\n${file_preview}\n\`\`\`\n\n[View Full File in Workflow](${workflow_url})",
+    "description": "**Platform:** $platform\\n**Program:** $program\\n**File:** \`$filename\` (${line_count} lines total)\\n\\n**Preview (30 lines):**\\n\`\`\`javascript\\n${file_preview}\\n\`\`\`\\n\\n[View Full File in Workflow](${workflow_url})",
     "color": 5763719,
     "footer": {
       "text": "New file #${file_count}"
@@ -294,8 +293,7 @@ EOF
 
                 # Send to Discord
                 curl -H "Content-Type: application/json" \
-                  -d "$json_payload" \
-                  "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                  -d "$json_payload" "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
             fi
 
