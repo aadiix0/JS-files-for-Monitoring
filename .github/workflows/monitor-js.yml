@@ -9,6 +9,8 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Install jq
         run: sudo apt-get install -y jq
@@ -103,47 +105,6 @@ jobs:
             done
           done
 
-      - name: Scan for endpoints and secrets
-        run: ./scan_js.sh monitored-files
-
-      - name: Prepare scan results for Discord
-        id: scan_results
-        run: |
-          if [ -s scan_results.txt ]; then
-            echo "results_found=true" >> $GITHUB_OUTPUT
-            preview=$(head -c 3800 scan_results.txt)
-            echo "results_preview<<EOF" >> $GITHUB_OUTPUT
-            echo "$preview" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-          else
-            echo "results_found=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload scan results artifact
-        if: steps.scan_results.outputs.results_found == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-results-${{ github.run_number }}
-          path: scan_results.txt
-          retention-days: 30
-
-      - name: Send scan results to Discord
-        if: steps.scan_results.outputs.results_found == 'true'
-        uses: tsickert/discord-webhook@v7.0.0
-        with:
-          webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          username: "JS Monitor Bot"
-          embed-title: "🔬 Scan Results: Endpoints & Secrets"
-          embed-description: |
-            **Scan found potential endpoints, parameters, or other items.**
-            **Preview:**
-            ```
-            ${{ steps.scan_results.outputs.results_preview }}
-            ```
-            [Download Full Scan Results (Artifacts)]
-            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          embed-color: 16729344
-
       - name: Check for changes and generate diffs
         id: diff
         run: |
@@ -237,22 +198,26 @@ jobs:
             file_count=$((file_count + 1))
 
             if [ "$change_type" = "CHANGED" ]; then
-              diff_file="diffs/$platform/$program/${filename}.diff"
-              if [ -f "$diff_file" ]; then
-                diff_preview=$(head -n 30 "$diff_file" | head -c 2800)
+              baseline_file="baseline/$platform/$program/$filename"
+              new_file="monitored-files/$platform/$program/$filename"
+
+              if [ -f "$baseline_file" ] && [ -f "$new_file" ]; then
+                old_content_preview=$(head -c 1500 "$baseline_file")
+                new_content_preview=$(head -c 1500 "$new_file")
 
                 jq -n \
                   --arg platform "$platform" \
                   --arg program "$program" \
                   --arg filename "$filename" \
-                  --arg diff "$diff_preview" \
+                  --arg old_content "$old_content_preview" \
+                  --arg new_content "$new_content_preview" \
                   --arg url "$workflow_url" \
                   --arg count "$file_count" \
                   '{
                     username: "JS Monitor Bot",
                     embeds: [{
                       title: "🔴 File Modified",
-                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "`\n\n**Diff Preview:**\n```diff\n" + $diff + "\n```\n\n[View Full Diff](" + $url + ")"),
+                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "`\n\n**Previous Content:**\n```javascript\n" + $old_content + "\n```\n\n**New Content:**\n```javascript\n" + $new_content + "\n```\n\n[View Workflow Run](" + $url + ")"),
                       color: 15158332,
                       footer: {text: ("Modified file #" + $count)},
                       timestamp: (now | strftime("%Y-%m-%dT%H:%M:%S.000Z"))
