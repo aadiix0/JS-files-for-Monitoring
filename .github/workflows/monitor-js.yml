@@ -1,5 +1,5 @@
 ---
-name: JS File Monitor 
+name: JS File Monitor
 
 on:
   schedule:
@@ -237,47 +237,58 @@ jobs:
             file_count=$((file_count + 1))
 
             if [ "$change_type" = "CHANGED" ]; then
-              # Get diff preview (30 lines for more detail)
               diff_file="diffs/$platform/$program/${filename}.diff"
               if [ -f "$diff_file" ]; then
-                # Escape and create JSON with jq
                 diff_preview=$(head -n 30 "$diff_file" | head -c 2800)
 
-                echo "{
-                  \"username\": \"JS Monitor Bot\",
-                  \"embeds\": [{
-                    \"title\": \"🔴 File Modified\",
-                    \"description\": \"**Platform:** $platform\n**Program:** $program\n**File:** \\\`$filename\\\`\n\n**Diff Preview:**\n\\\`\\\`\\\`diff\n$diff_preview\n\\\`\\\`\\\`\n\n[View Full Diff]($workflow_url)\",
-                    \"color\": 15158332,
-                    \"footer\": {\"text\": \"Modified file #$file_count\"},
-                    \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
-                  }]
-                }" | jq -c '.' | curl -H "Content-Type: application/json" -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                jq -n \
+                  --arg platform "$platform" \
+                  --arg program "$program" \
+                  --arg filename "$filename" \
+                  --arg diff "$diff_preview" \
+                  --arg url "$workflow_url" \
+                  --arg count "$file_count" \
+                  '{
+                    username: "JS Monitor Bot",
+                    embeds: [{
+                      title: "🔴 File Modified",
+                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "`\n\n**Diff Preview:**\n```diff\n" + $diff + "\n```\n\n[View Full Diff](" + $url + ")"),
+                      color: 15158332,
+                      footer: {text: ("Modified file #" + $count)},
+                      timestamp: (now | strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                    }]
+                  }' | curl -H "Content-Type: application/json" \
+                       -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
 
             elif [ "$change_type" = "NEW" ]; then
-              # Get new file preview (30 lines)
               new_file="monitored-files/$platform/$program/$filename"
               if [ -f "$new_file" ]; then
                 line_count=$(wc -l < "$new_file")
-                # Escape and create JSON with jq
                 file_preview=$(head -n 30 "$new_file" | head -c 2800)
 
-                echo "{
-                  \"username\": \"JS Monitor Bot\",
-                  \"embeds\": [{
-                    \"title\": \"🟢 New File Detected\",
-                    \"description\": \"**Platform:** $platform\n**Program:** $program\n**File:** \\\`$filename\\\` (${line_count} lines total)\n\n**Preview:**\n\\\`\\\`\\\`javascript\n$file_preview\n\\\`\\\`\\\`\n\n[View Full File]($workflow_url)\",
-                    \"color\": 5763719,
-                    \"footer\": {\"text\": \"New file #$file_count\"},
-                    \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
-                  }]
-                }" | jq -c '.' | curl -H "Content-Type: application/json" -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                jq -n \
+                  --arg platform "$platform" \
+                  --arg program "$program" \
+                  --arg filename "$filename" \
+                  --arg lines "$line_count" \
+                  --arg preview "$file_preview" \
+                  --arg url "$workflow_url" \
+                  --arg count "$file_count" \
+                  '{
+                    username: "JS Monitor Bot",
+                    embeds: [{
+                      title: "🟢 New File Detected",
+                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "` (" + $lines + " lines total)\n\n**Preview:**\n```javascript\n" + $preview + "\n```\n\n[View Full File](" + $url + ")"),
+                      color: 5763719,
+                      footer: {text: ("New file #" + $count)},
+                      timestamp: (now | strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                    }]
+                  }' | curl -H "Content-Type: application/json" \
+                       -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
             fi
 
-            # Discord rate limit: 5 messages per 2 seconds = 1 message every 0.4s
-            # Using 0.5s to be safe
             sleep 0.5
 
           done < changes_list.txt
