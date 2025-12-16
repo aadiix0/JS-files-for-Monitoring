@@ -10,6 +10,9 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -237,31 +240,19 @@ jobs:
               # Get diff preview (30 lines for more detail)
               diff_file="diffs/$platform/$program/${filename}.diff"
               if [ -f "$diff_file" ]; then
-                # Escape special characters for JSON and limit to 3000 chars
-                diff_preview=$(head -n 30 "$diff_file" | head -c 3000 | \
-                  sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | \
-                  sed ':a;N;$!ba;s/\n/\\n/g')
+                # Escape and create JSON with jq
+                diff_preview=$(head -n 30 "$diff_file" | head -c 2800)
 
-                # Create JSON payload
-                json_payload=$(cat <<EOF
-{
-  "username": "JS Monitor Bot",
-  "embeds": [{
-    "title": "🔴 File Modified",
-    "description": "**Platform:** ${platform}\n**Program:** ${program}\n**File:** \`${filename}\`\n\n**Diff Preview (30 lines):**\n\`\`\`diff\n${diff_preview}\n\`\`\`\n\n[View Full Diff in Workflow](${workflow_url})",
-    "color": 15158332,
-    "footer": {
-      "text": "Modified file #${file_count}"
-    },
-    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-  }]
-}
-EOF
-)
-
-                # Send to Discord
-                curl -H "Content-Type: application/json" \
-                  -d "$json_payload" "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                echo "{
+                  \"username\": \"JS Monitor Bot\",
+                  \"embeds\": [{
+                    \"title\": \"🔴 File Modified\",
+                    \"description\": \"**Platform:** $platform\n**Program:** $program\n**File:** \\\`$filename\\\`\n\n**Diff Preview:**\n\\\`\\\`\\\`diff\n$diff_preview\n\\\`\\\`\\\`\n\n[View Full Diff]($workflow_url)\",
+                    \"color\": 15158332,
+                    \"footer\": {\"text\": \"Modified file #$file_count\"},
+                    \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+                  }]
+                }" | jq -c '.' | curl -H "Content-Type: application/json" -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
 
             elif [ "$change_type" = "NEW" ]; then
@@ -269,31 +260,19 @@ EOF
               new_file="monitored-files/$platform/$program/$filename"
               if [ -f "$new_file" ]; then
                 line_count=$(wc -l < "$new_file")
-                # Escape special characters for JSON and limit to 3000 chars
-                file_preview=$(head -n 30 "$new_file" | head -c 3000 | \
-                  sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | \
-                  sed ':a;N;$!ba;s/\n/\\n/g')
+                # Escape and create JSON with jq
+                file_preview=$(head -n 30 "$new_file" | head -c 2800)
 
-                # Create JSON payload
-                json_payload=$(cat <<EOF
-{
-  "username": "JS Monitor Bot",
-  "embeds": [{
-    "title": "🟢 New File Detected",
-    "description": "**Platform:** $platform\\n**Program:** $program\\n**File:** \`$filename\` (${line_count} lines total)\\n\\n**Preview (30 lines):**\\n\`\`\`javascript\\n${file_preview}\\n\`\`\`\\n\\n[View Full File in Workflow](${workflow_url})",
-    "color": 5763719,
-    "footer": {
-      "text": "New file #${file_count}"
-    },
-    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-  }]
-}
-EOF
-)
-
-                # Send to Discord
-                curl -H "Content-Type: application/json" \
-                  -d "$json_payload" "${{ secrets.DISCORD_WEBHOOK_URL }}"
+                echo "{
+                  \"username\": \"JS Monitor Bot\",
+                  \"embeds\": [{
+                    \"title\": \"🟢 New File Detected\",
+                    \"description\": \"**Platform:** $platform\n**Program:** $program\n**File:** \\\`$filename\\\` (${line_count} lines total)\n\n**Preview:**\n\\\`\\\`\\\`javascript\n$file_preview\n\\\`\\\`\\\`\n\n[View Full File]($workflow_url)\",
+                    \"color\": 5763719,
+                    \"footer\": {\"text\": \"New file #$file_count\"},
+                    \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\"
+                  }]
+                }" | jq -c '.' | curl -H "Content-Type: application/json" -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
             fi
 
