@@ -196,10 +196,10 @@ jobs:
   "username": "JS Monitor Bot",
   "embeds": [{
     "title": "🔴 File Modified",
-    "description": "**Platform:** $platform\\n**Program:** $program\\n**File:** \`$filename\`\\n\\n**Diff Preview (30 lines):**\\n\`\`\`diff\\n${diff_preview}\\n\`\`\`\\n\\n[View Full Diff in Workflow](${workflow_url})",
+    "description": "**Platform:** ${platform}\n**Program:** ${program}\n**File:** \`${filename}\`\n\n**Diff Preview (30 lines):**\n\`\`\`diff\n${diff_preview}\n\`\`\`\n\n[View Full Diff in Workflow](${workflow_url})",
     "color": 15158332,
     "footer": {
-      "text": "Modified file #$file_count"
+      "text": "Modified file #${file_count}"
     },
     "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
   }]
