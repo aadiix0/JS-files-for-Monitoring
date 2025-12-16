@@ -1,46 +1,51 @@
+---
 name: JS File Monitor
 
 on:
   schedule:
-    - cron: '0 */1 * * '  # Every 1 hours
-  workflow_dispatch:
+    - cron: '0 */1 * * *'
+  workflow_dispatch: {}
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
     steps:
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - name: Clean up old monitored files
         run: |
           # Remove temporary folders from previous runs
           rm -rf monitored-files diffs
-          
+
           # Remove baseline files that no longer have URL configs
           for platform in hackerone bugcrowd intigriti personal; do
             [ ! -d "baseline/$platform" ] && continue
-            
+
             for baseline_program in baseline/$platform/*; do
               [ ! -d "$baseline_program" ] && continue
-              
+
               program_name=$(basename "$baseline_program")
-              
+
               # Check if program still has config file (flat or nested)
               config_exists=false
-              
+
               # Check flat structure
               if [ -f "$platform/${program_name}.txt" ]; then
                 config_exists=true
               fi
-              
+
               # Check nested structure
-              if [ -f "$platform/${program_name}/urls.txt" ] || [ -f "$platform/${program_name}/"*.txt ]; then
+              if [ -f "$platform/${program_name}/urls.txt" ] || \
+                 [ -f "$platform/${program_name}/"*.txt ]; then
                 config_exists=true
               fi
-              
+
               # Remove baseline if config no longer exists
               if [ "$config_exists" = false ]; then
                 echo "Removing orphaned baseline: $platform/$program_name"
@@ -53,48 +58,91 @@ jobs:
         timeout-minutes: 20
         run: |
           mkdir -p monitored-files diffs
-          
+
           for platform in hackerone bugcrowd intigriti personal; do
             if [ ! -d "$platform" ]; then
               echo "Folder $platform not found, skipping..."
               continue
             fi
-            
+
             echo "Processing platform: $platform"
-            
+
             # Find all .txt files in platform folder (including subfolders)
             find "$platform" -name "*.txt" -type f | while read -r program_file; do
-              
+
               # Extract program name from path (parent directory name)
               program_name=$(basename "$(dirname "$program_file")")
-              
-              # If .txt file is directly in platform folder, use filename as program name
+
+              # If .txt file is directly in platform folder, use filename
               if [ "$(dirname "$program_file")" = "$platform" ]; then
                 program_name=$(basename "$program_file" .txt)
               fi
-              
+
               echo "  Processing program: $program_name (from $program_file)"
-              
+
               mkdir -p "monitored-files/$platform/$program_name"
-              
+
               # Read URLs from program file
               file_num=0
               while IFS= read -r url || [ -n "$url" ]; do
                 [[ -z "$url" || "$url" =~ ^#.*$ ]] && continue
-                
+
                 file_num=$((file_num + 1))
-                
+
                 js_filename=$(echo "$url" | sed 's/.*\///' | sed 's/?.*//')
                 [ -z "$js_filename" ] && js_filename="file_${file_num}.js"
-                [[ ! "$js_filename" =~ \.js$ ]] && js_filename="${js_filename}.js"
-                
+                [[ ! "$js_filename" =~ \.js$ ]] && \
+                  js_filename="${js_filename}.js"
+
                 echo "    Fetching: $js_filename from $url"
-                curl -sL --max-time 30 "$url" -o "monitored-files/$platform/$program_name/$js_filename" || \
+                curl -sL --max-time 30 "$url" -o \
+                  "monitored-files/$platform/$program_name/$js_filename" || \
                   echo "Failed to fetch $url"
-                
+
               done < "$program_file"
             done
           done
+
+      - name: Scan for endpoints and secrets
+        run: ./scan_js.sh monitored-files
+
+      - name: Prepare scan results for Discord
+        id: scan_results
+        run: |
+          if [ -s scan_results.txt ]; then
+            echo "results_found=true" >> $GITHUB_OUTPUT
+            preview=$(head -c 3800 scan_results.txt)
+            echo "results_preview<<EOF" >> $GITHUB_OUTPUT
+            echo "$preview" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "results_found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload scan results artifact
+        if: steps.scan_results.outputs.results_found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results-${{ github.run_number }}
+          path: scan_results.txt
+          retention-days: 30
+
+      - name: Send scan results to Discord
+        if: steps.scan_results.outputs.results_found == 'true'
+        uses: tsickert/discord-webhook@v7.0.0
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          username: "JS Monitor Bot"
+          embed-title: "🔬 Scan Results: Endpoints & Secrets"
+          embed-description: |
+            **Scan found potential endpoints, parameters, or other items.**
+            **Preview:**
+            ```
+            ${{ steps.scan_results.outputs.results_preview }}
+            ```
+            [Download Full Scan Results (Artifacts)]
+            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          embed-color: 16729344
 
       - name: Check for changes and generate diffs
         id: diff
@@ -102,54 +150,57 @@ jobs:
           changes_found=false
           total_changes=0
           total_new=0
-          
+
           # Create a changes list file
           mkdir -p baseline
           touch changes_list.txt
-          
+
           for platform in hackerone bugcrowd intigriti personal; do
             [ ! -d "monitored-files/$platform" ] && continue
-            
+
             for program_dir in monitored-files/$platform/*; do
               [ ! -d "$program_dir" ] && continue
-              
+
               program_name=$(basename "$program_dir")
-              platform_name=$(basename $(dirname "$program_dir"))
-              
+              platform_name=$(basename "$(dirname "$program_dir")")
+
               mkdir -p "baseline/$platform_name/$program_name"
-              
+
               for js_file in "$program_dir"/*.js; do
                 [ ! -f "$js_file" ] && continue
-                
+
                 filename=$(basename "$js_file")
                 baseline_file="baseline/$platform_name/$program_name/$filename"
-                
+
                 if [ -f "$baseline_file" ]; then
                   if ! diff -q "$baseline_file" "$js_file" > /dev/null 2>&1; then
                     echo "Changes: $platform_name/$program_name/$filename"
                     changes_found=true
                     total_changes=$((total_changes + 1))
-                    
+
                     # Save to changes list
-                    echo "CHANGED|$platform_name|$program_name|$filename" >> changes_list.txt
-                    
+                    echo "CHANGED|$platform_name|$program_name|$filename" \
+                      >> changes_list.txt
+
                     # Save full diff to file
                     mkdir -p "diffs/$platform_name/$program_name"
                     diff -u "$baseline_file" "$js_file" > \
-                      "diffs/$platform_name/$program_name/${filename}.diff" 2>&1 || true
+                      "diffs/$platform_name/$program_name/${filename}.diff" \
+                      2>&1 || true
                   fi
                 else
                   echo "New baseline: $platform_name/$program_name/$filename"
                   changes_found=true
                   total_new=$((total_new + 1))
-                  
+
                   # Save to changes list
-                  echo "NEW|$platform_name|$program_name|$filename" >> changes_list.txt
+                  echo "NEW|$platform_name|$program_name|$filename" \
+                    >> changes_list.txt
                 fi
               done
             done
           done
-          
+
           if [ "$changes_found" = true ]; then
             echo "changes_detected=true" >> $GITHUB_OUTPUT
             echo "total_changes=$total_changes" >> $GITHUB_OUTPUT
@@ -167,11 +218,13 @@ jobs:
             **Summary:**
             🔴 ${{ steps.diff.outputs.total_changes }} file(s) modified
             🟢 ${{ steps.diff.outputs.total_new }} new file(s) detected
-            
+
             📊 Sending detailed report for each file...
-            
-            [View Full Workflow](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            [Download All Diffs (Artifacts)](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            [View Full Workflow]
+            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            [Download All Diffs (Artifacts)]
+            (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           embed-color: 3447003
 
       - name: Send individual Discord alerts for each change
@@ -179,78 +232,67 @@ jobs:
         run: |
           file_count=0
           workflow_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
+
           while IFS='|' read -r change_type platform program filename; do
             file_count=$((file_count + 1))
-            
+
             if [ "$change_type" = "CHANGED" ]; then
-              # Get diff preview (30 lines for more detail)
               diff_file="diffs/$platform/$program/${filename}.diff"
               if [ -f "$diff_file" ]; then
-                # Escape special characters for JSON and limit to 3000 chars
-                diff_preview=$(head -n 30 "$diff_file" | head -c 3000 | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-                
-                # Create JSON payload
-                json_payload=$(cat <<EOF
-{
-  "username": "JS Monitor Bot",
-  "embeds": [{
-    "title": "🔴 File Modified",
-    "description": "**Platform:** ${platform}\n**Program:** ${program}\n**File:** \`${filename}\`\n\n**Diff Preview (30 lines):**\n\`\`\`diff\n${diff_preview}\n\`\`\`\n\n[View Full Diff in Workflow](${workflow_url})",
-    "color": 15158332,
-    "footer": {
-      "text": "Modified file #${file_count}"
-    },
-    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-  }]
-}
-EOF
-)
-                
-                # Send to Discord
-                curl -H "Content-Type: application/json" \
-                  -d "$json_payload" \
-                  ${{ secrets.DISCORD_WEBHOOK_URL }}
+                diff_preview=$(head -n 30 "$diff_file" | head -c 2800)
+
+                jq -n \
+                  --arg platform "$platform" \
+                  --arg program "$program" \
+                  --arg filename "$filename" \
+                  --arg diff "$diff_preview" \
+                  --arg url "$workflow_url" \
+                  --arg count "$file_count" \
+                  '{
+                    username: "JS Monitor Bot",
+                    embeds: [{
+                      title: "🔴 File Modified",
+                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "`\n\n**Diff Preview:**\n```diff\n" + $diff + "\n```\n\n[View Full Diff](" + $url + ")"),
+                      color: 15158332,
+                      footer: {text: ("Modified file #" + $count)},
+                      timestamp: (now | strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                    }]
+                  }' | curl -H "Content-Type: application/json" \
+                       -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
-              
+
             elif [ "$change_type" = "NEW" ]; then
-              # Get new file preview (30 lines)
               new_file="monitored-files/$platform/$program/$filename"
               if [ -f "$new_file" ]; then
                 line_count=$(wc -l < "$new_file")
-                # Escape special characters for JSON and limit to 3000 chars
-                file_preview=$(head -n 30 "$new_file" | head -c 3000 | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-                
-                # Create JSON payload
-                json_payload=$(cat <<EOF
-{
-  "username": "JS Monitor Bot",
-  "embeds": [{
-    "title": "🟢 New File Detected",
-    "description": "**Platform:** $platform\\n**Program:** $program\\n**File:** \`$filename\` (${line_count} lines total)\\n\\n**Preview (30 lines):**\\n\`\`\`javascript\\n${file_preview}\\n\`\`\`\\n\\n[View Full File in Workflow](${workflow_url})",
-    "color": 5763719,
-    "footer": {
-      "text": "New file #$file_count"
-    },
-    "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-  }]
-}
-EOF
-)
-                
-                # Send to Discord
-                curl -H "Content-Type: application/json" \
-                  -d "$json_payload" \
-                  ${{ secrets.DISCORD_WEBHOOK_URL }}
+                file_preview=$(head -n 30 "$new_file" | head -c 2800)
+
+                jq -n \
+                  --arg platform "$platform" \
+                  --arg program "$program" \
+                  --arg filename "$filename" \
+                  --arg lines "$line_count" \
+                  --arg preview "$file_preview" \
+                  --arg url "$workflow_url" \
+                  --arg count "$file_count" \
+                  '{
+                    username: "JS Monitor Bot",
+                    embeds: [{
+                      title: "🟢 New File Detected",
+                      description: ("**Platform:** " + $platform + "\n**Program:** " + $program + "\n**File:** `" + $filename + "` (" + $lines + " lines total)\n\n**Preview:**\n```javascript\n" + $preview + "\n```\n\n[View Full File](" + $url + ")"),
+                      color: 5763719,
+                      footer: {text: ("New file #" + $count)},
+                      timestamp: (now | strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+                    }]
+                  }' | curl -H "Content-Type: application/json" \
+                       -d @- "${{ secrets.DISCORD_WEBHOOK_URL }}"
               fi
             fi
-            
-            # Discord rate limit: 5 messages per 2 seconds = 1 message every 0.4s
-            # Using 0.5s to be safe
+
             sleep 0.5
-            
+
           done < changes_list.txt
-          
+
           echo "Sent $file_count individual alerts to Discord"
 
       - name: Upload diff artifacts
@@ -266,32 +308,34 @@ EOF
         run: |
           echo "## 🔍 JavaScript Changes Detected" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           file_count=0
           for platform in hackerone bugcrowd intigriti personal; do
             [ ! -d "diffs/$platform" ] && continue
-            
+
             for program_dir in diffs/$platform/*; do
               [ ! -d "$program_dir" ] && continue
-              
+
               for diff_file in "$program_dir"/*.diff; do
                 [ ! -f "$diff_file" ] && continue
-                
+
                 file_count=$((file_count + 1))
-                
+
                 # Limit to first 20 files in GitHub summary
                 if [ $file_count -gt 20 ]; then
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "**... and more files. Download artifacts or check Discord for all diffs.**" >> $GITHUB_STEP_SUMMARY
+                  echo "**... and more files. Download artifacts or check Discord for all diffs.**" \
+                    >> $GITHUB_STEP_SUMMARY
                   break 3
                 fi
-                
-                platform_name=$(basename $(dirname $(dirname "$diff_file")))
-                program_name=$(basename $(dirname "$diff_file"))
+
+                platform_name=$(basename "$(dirname "$(dirname "$diff_file")")")
+                program_name=$(basename "$(dirname "$diff_file")")
                 filename=$(basename "$diff_file" .diff)
-                
-                echo "### 📄 $platform_name/$program_name/$filename" >> $GITHUB_STEP_SUMMARY
-                echo '```
+
+                echo "### 📄 $platform_name/$program_name/$filename" \
+                  >> $GITHUB_STEP_SUMMARY
+                echo '```' >> $GITHUB_STEP_SUMMARY
                 head -n 50 "$diff_file" >> $GITHUB_STEP_SUMMARY
                 echo '```' >> $GITHUB_STEP_SUMMARY
                 echo "" >> $GITHUB_STEP_SUMMARY
