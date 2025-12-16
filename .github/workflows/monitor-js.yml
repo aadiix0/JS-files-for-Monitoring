@@ -1,5 +1,5 @@
 ---
-name: JS File Monitor
+name: JS File Monitor 
 
 on:
   schedule:
